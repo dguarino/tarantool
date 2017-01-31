@@ -39,10 +39,10 @@ const unsigned char iproto_key_type[IPROTO_KEY_MAX] =
 		/* 0x03 */	MP_UINT,   /* IPROTO_LSN */
 		/* 0x04 */	MP_DOUBLE, /* IPROTO_TIMESTAMP */
 		/* 0x05 */	MP_UINT,   /* IPROTO_SCHEMA_ID */
+		/* 0x06 */      MP_UINT,   /* IPROTO_TRANSACTION_ID */
 	/* }}} */
 
 	/* {{{ unused */
-		/* 0x06 */	MP_UINT,
 		/* 0x07 */	MP_UINT,
 		/* 0x08 */	MP_UINT,
 		/* 0x09 */	MP_UINT,
@@ -101,7 +101,10 @@ const char *iproto_type_strs[] =
 	"AUTH",
 	"EVAL",
 	"UPSERT",
-	"CALL"
+	"CALL",
+	"BEGIN",
+	"COMMIT",
+	"ROLLBACK"
 };
 
 #define bit(c) (1ULL<<IPROTO_##c)
@@ -126,8 +129,8 @@ const char *iproto_key_strs[IPROTO_KEY_MAX] = {
 	"server_id",          /* 0x02 */
 	"lsn",              /* 0x03 */
 	"timestamp",        /* 0x04 */
-	"",                 /* 0x05 */
-	"",                 /* 0x06 */
+	"schema_id",        /* 0x05 */
+	"transaction_id",   /* 0x06 */
 	"",                 /* 0x07 */
 	"",                 /* 0x08 */
 	"",                 /* 0x09 */
