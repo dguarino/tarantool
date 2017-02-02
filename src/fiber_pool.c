@@ -76,6 +76,7 @@ restart:
 		goto restart;
 	}
 	pool->size--;
+
 	return 0;
 }
 
@@ -146,22 +147,29 @@ fiber_pool_create(struct fiber_pool *pool, const char *name, int max_pool_size,
 	pool->max_size = max_pool_size;
 	stailq_create(&pool->output);
 	/* Join fiber pool to cbus */
-	cbus_join(&pool->endpoint, name, fiber_pool_cb, pool);
+	cbus_endpoint_create(&pool->endpoint, name, fiber_pool_cb, pool);
 }
 
 void
 fiber_pool_destroy(struct fiber_pool *pool)
 {
-	(void) pool;
-	/*
-	 * Do not destroy async or idle timers, or fibers:
-	 * events are destroyed along with the event loop,
-	 * and fibers are freed at once when thread runtime
-	 * pool is destroyed.
-         */
-	/*
-	 * No cbus_endpoint_destroy(): we can't leave the
-	 * cbus safely yet.
+	pool->destroy_fiber = fiber();
+	/** Endpoint has connected pipes or unfetched messages */
+	cbus_endpoint_destroy(&pool->endpoint, NULL);
+	/**
+	 * At this point we won't to have new messages from cbus, so
+	 * all messages distributed between worked fibers or idle list
+	 * should be empty. It is safe to send wakeup to each idle
+	 * fiber to force fiber exiting.
 	 */
+	struct fiber *idle_fiber;
+	rlist_foreach_entry(idle_fiber, &pool->idle, state)
+		fiber_wakeup(idle_fiber);
+	/*
+	 * Fiber pool has more messages to process or not
+	 * all workers are finished.
+	 */
+	while (!rlist_empty(&pool->idle))
+		fiber_join(rlist_first_entry(&pool->idle, struct fiber, state));
 }
 

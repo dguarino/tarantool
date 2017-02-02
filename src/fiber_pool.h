@@ -64,6 +64,7 @@ struct fiber_pool {
 		/** Staged messages (for fibers to work on) */
 		struct stailq output;
 		struct ev_timer idle_timer;
+		struct fiber *destroy_fiber;
 	};
 	struct {
 		/** The consumer thread loop. */
