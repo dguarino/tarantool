@@ -288,7 +288,7 @@ vy_stmt_extract_key(const struct tuple *stmt, const struct key_def *key_def,
 	       type == IPROTO_DELETE);
 	uint32_t bsize;
 	size_t region_svp = region_used(region);
-	char *key = tuple_extract_key(stmt, key_def, &bsize);
+	char *key = tuple_extract_key(stmt, key_def, &bsize, region);
 	if (key == NULL)
 		goto error;
 	struct tuple *ret = vy_stmt_alloc(format, bsize);
@@ -431,7 +431,8 @@ vy_stmt_encode(const struct tuple *value, const struct key_def *key_def,
 	uint32_t size;
 	const char *extracted = NULL;
 	if (key_def->iid != 0 || type == IPROTO_DELETE) {
-		extracted = tuple_extract_key(value, key_def, &size);
+		extracted = tuple_extract_key(value, key_def, &size,
+					      &fiber()->gc);
 		if (extracted == NULL)
 			return -1;
 	}
@@ -453,7 +454,8 @@ vy_stmt_encode(const struct tuple *value, const struct key_def *key_def,
 			request.key = extracted;
 			request.key_end = request.key + size;
 		}
-		xrow->bodycnt = request_encode(&request, xrow->body);
+		xrow->bodycnt = request_encode(&request, xrow->body,
+					       &fiber()->gc);
 	} else {
 		if (type == IPROTO_REPLACE) {
 			request.tuple = extracted;
@@ -463,7 +465,8 @@ vy_stmt_encode(const struct tuple *value, const struct key_def *key_def,
 			request.key = extracted;
 			request.key_end = extracted + size;
 		}
-		xrow->bodycnt = request_encode(&request, xrow->body);
+		xrow->bodycnt = request_encode(&request, xrow->body,
+					       &fiber()->gc);
 	}
 	if (xrow->bodycnt < 0)
 		return -1;
