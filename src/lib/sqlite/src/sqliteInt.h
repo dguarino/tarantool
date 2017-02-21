@@ -917,7 +917,6 @@ struct BusyHandler {
 ** user tables and indices.
 */
 #define MASTER_NAME       "sqlite_master"
-#define TARANTOOL_INDEX   "_index"
 #define TEMP_MASTER_NAME  "sqlite_temp_master"
 
 /*

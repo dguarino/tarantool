@@ -1750,6 +1750,48 @@ static void convertToWithoutRowidTable(Parse *pParse, Table *pTab){
 }
 
 /*
+** Generate code to determine the new space Id.
+** Assume _schema was open and accessible via iCursor.
+** Fetch the max space id seen so far from _schema and increment it.
+** Return register storing the result.
+*/
+static int getNewSpaceId(
+  Parse *pParse,
+  int iCursor
+){
+  Vdbe *v = sqlite3GetVdbe(pParse);
+  int iRes = ++pParse->nMem;
+  int iKey = ++pParse->nMem;
+  int iSeekInst, iGotoInst;
+
+  sqlite3VdbeAddOp4(v,
+    OP_String8, 0, iKey, 0, TARANTOOL_SYS_SCHEMA_MAXID_KEY,
+    P4_STATIC
+  );
+
+  iSeekInst = sqlite3VdbeAddOp4Int(v, OP_SeekLE, iCursor, 0, iKey, 1);
+  sqlite3VdbeAddOp4Int(v, OP_IdxLT, iCursor, 0, iKey, 1);
+
+  iGotoInst = sqlite3VdbeAddOp0(v, OP_Goto); /* Skip Halt */
+
+  /* Mandatory key is missing from _schema, halt. */
+  sqlite3VdbeJumpHere(v, iSeekInst);
+  sqlite3VdbeJumpHere(v, iSeekInst+1);
+  sqlite3VdbeAddOp4(v,
+    OP_Halt, SQLITE_ERROR, OE_Fail, 0,
+    "Corrupt "TARANTOOL_SYS_SCHEMA_NAME": "
+    TARANTOOL_SYS_SCHEMA_MAXID_KEY" not found",
+    P4_STATIC
+  );
+
+  /* Max_id key successfully fetched, increment value. */
+  sqlite3VdbeJumpHere(v, iGotoInst);
+  sqlite3VdbeAddOp3(v, OP_Column, iCursor, 1, iRes);
+  sqlite3VdbeAddOp2(v, OP_AddImm, iRes, 1);
+  return iRes;
+}
+
+/*
 ** Generate VDBE code to create an Index. This is acomplished by adding
 ** an entry to the _index table. ISpaceId either contains the literal
 ** space id or designates a register storing the id.
@@ -1855,6 +1897,127 @@ static int makeIndexSchemaRecord(
 }
 
 /*
+ * Generate code to create a new space.
+ * iSpaceId is a register storing the id of the space.
+ * iCursor is a cursor to access _space.
+ */
+static void createSpace(
+  Parse *pParse,
+  int iSpaceId,
+  char *zStmt,
+  int iCursor,
+  Table *pSysSpace
+){
+  Table *p = pParse->pNewTable;
+  Vdbe *v = sqlite3GetVdbe(pParse);
+  int iFirstCol = ++pParse->nMem;
+  int iRecord = (pParse->nMem += 7);
+  char *zOpts, *zFormat;
+  int zOptsSz, zFormatSz;
+
+  zOpts = sqlite3DbMallocRaw(pParse->db,
+    tarantoolSqlite3MakeTableFormat(p, NULL) +
+    tarantoolSqlite3MakeTableOpts(p, zStmt, NULL) + 2
+  );
+  if( !zOpts ){
+    zOptsSz = 0;
+    zFormat = NULL;
+    zFormatSz = 0;
+  }else{
+    zOptsSz = tarantoolSqlite3MakeTableOpts(p, zStmt, zOpts);
+    zFormat = zOpts + zOptsSz + 1;
+    zFormatSz = tarantoolSqlite3MakeTableFormat(p, zFormat);
+#if SQLITE_DEBUG
+    /* NUL-termination is necessary for VDBE-tracing facility only */
+    zOpts[zOptsSz] = 0;
+    zFormat[zFormatSz] = 0;
+#endif
+  }
+
+  sqlite3VdbeAddOp2(v, OP_SCopy, iSpaceId, iFirstCol /* spaceId */);
+  sqlite3VdbeAddOp2(v, OP_Integer, 1, iFirstCol+1 /* owner */);
+  sqlite3VdbeAddOp4(v,
+    OP_String8, 0, iFirstCol+2 /* name */, 0,
+    sqlite3DbStrDup(pParse->db, p->zName),
+    P4_DYNAMIC
+  );
+  sqlite3VdbeAddOp4(v, OP_String8, 0, iFirstCol+3 /* engine */, 0, "memtx", P4_STATIC);
+  sqlite3VdbeAddOp2(v, OP_Integer, p->nCol, iFirstCol+4 /* field_count */);
+  sqlite3VdbeAddOp4(v, OP_Blob, zOptsSz, iFirstCol+5, MSGPACK_SUBTYPE, zOpts, P4_DYNAMIC);
+  /* zOpts and zFormat are co-located, hence STATIC */
+  sqlite3VdbeAddOp4(v, OP_Blob, zFormatSz, iFirstCol+6, MSGPACK_SUBTYPE, zFormat, P4_STATIC);
+  sqlite3VdbeAddOp3(v, OP_MakeRecord, iFirstCol, 7, iRecord);
+  sqlite3VdbeAddOp4Int(v, OP_IdxInsert, iCursor, iRecord, iFirstCol, 7);
+  sqlite3TableAffinity(v, pSysSpace, 0);
+}
+
+/*
+ * Generate code to create implicit indexes in the new table.
+ * iSpaceId is a register storing the id of the space.
+ * iCursor is a cursor to access _index.
+ */
+static void createImplicitIndices(
+  Parse *pParse,
+  int iSpaceId,
+  int iCursor,
+  Table *pSysIndex
+){
+  Table *p = pParse->pNewTable;
+  Index *pIdx, *pPrimaryIdx = sqlite3PrimaryKeyIndex(p);
+  int i;
+
+  if( pPrimaryIdx ){
+    /* Tarantool quirk: primary index is created first */
+    createIndex(pParse, pPrimaryIdx, iSpaceId, 0, NULL, pSysIndex, iCursor);
+  }else{
+    assert(0);
+  }
+
+  /* (pIdx->i) mapping must be consistent with parseTableSchemaRecord */
+  for( pIdx=p->pIndex, i=0; pIdx; pIdx = pIdx->pNext ){
+    if( pIdx == pPrimaryIdx )continue;
+    createIndex(pParse, pIdx, iSpaceId, ++i, NULL, pSysIndex, iCursor);
+  }
+}
+
+/*
+ * Generate code to emit and parse table schema record.
+ * iSpaceId is a register storing the id of the space.
+ * Consumes zStmt.
+ */
+static void parseTableSchemaRecord(
+  Parse *pParse,
+  int iDb,
+  int iSpaceId,
+  char *zStmt
+){
+  Table *p = pParse->pNewTable;
+  Vdbe *v = sqlite3GetVdbe(pParse);
+  Index *pIdx, *pPrimaryIdx;
+  int i, iTop = pParse->nMem+1;
+  pParse->nMem += 4;
+
+  sqlite3VdbeAddOp4(v,
+    OP_String8, 0, iTop, 0,
+    sqlite3DbStrDup(pParse->db, p->zName),
+    P4_DYNAMIC
+  );
+  sqlite3VdbeAddOp2(v, OP_SCopy, iSpaceId, iTop+1);
+  sqlite3VdbeAddOp2(v, OP_Integer, 0, iTop+2);
+  sqlite3VdbeAddOp4(v, OP_String8, 0, iTop+3, 0, zStmt, P4_DYNAMIC);
+
+  pPrimaryIdx = sqlite3PrimaryKeyIndex(p);
+  /* (pIdx->i) mapping must be consistent with createImplicitIndices */
+  for( pIdx=p->pIndex, i=0; pIdx; pIdx = pIdx->pNext ){
+    if( pIdx == pPrimaryIdx )continue;
+    makeIndexSchemaRecord(pParse, pIdx, iSpaceId, ++i, NULL);
+  }
+
+  sqlite3ChangeCookie(pParse, iDb);
+  sqlite3VdbeAddParseSchema2Op(v, iDb, iTop, pParse->nMem-iTop+1);
+}
+
+/*
 ** This routine is called to report the final ")" that terminates
 ** a CREATE TABLE statement.
 **
@@ -1949,25 +2112,43 @@ void sqlite3EndTable(
   if( !db->init.busy ){
     int n;
     Vdbe *v;
-    char *zType;    /* "view" or "table" */
-    char *zType2;   /* "VIEW" or "TABLE" */
+    char *zType;   /* "VIEW" or "TABLE" */
     char *zStmt;    /* Text of the CREATE TABLE or CREATE VIEW statement */
+    Table *pSysSchema, *pSysSpace, *pSysIndex;
+    int iCursor = pParse->nTab++;
+    int iSpaceId;
 
     v = sqlite3GetVdbe(pParse);
     if( NEVER(v==0) ) return;
 
-    /* 
+    pSysSchema = sqlite3HashFind(
+      &pParse->db->aDb[0].pSchema->tblHash,
+      TARANTOOL_SYS_SCHEMA_NAME
+    );
+    if( NEVER(!pSysSchema) ) return;
+
+    pSysSpace = sqlite3HashFind(
+      &pParse->db->aDb[0].pSchema->tblHash,
+      TARANTOOL_SYS_SPACE_NAME
+    );
+    if( NEVER(!pSysSpace) ) return;
+
+    pSysIndex = sqlite3HashFind(
+      &pParse->db->aDb[0].pSchema->tblHash,
+      TARANTOOL_SYS_INDEX_NAME
+    );
+    if( NEVER(!pSysIndex) ) return;
+
+    /*
     ** Initialize zType for the new view or table.
     */
     if( p->pSelect==0 ){
       /* A regular table */
-      zType = "table";
-      zType2 = "TABLE";
+      zType = "TABLE";
 #ifndef SQLITE_OMIT_VIEW
     }else{
       /* A view */
-      zType = "view";
-      zType2 = "VIEW";
+      zType = "VIEW";
 #endif
     }
 
@@ -2035,12 +2216,18 @@ void sqlite3EndTable(
       n = (int)(pEnd2->z - pParse->sNameToken.z);
       if( pEnd2->z[0]!=';' ) n += pEnd2->n;
       zStmt = sqlite3MPrintf(db, 
-          "CREATE %s %.*s", zType2, n, pParse->sNameToken.z
+          "CREATE %s %.*s", zType, n, pParse->sNameToken.z
       );
     }
 
-    sqlite3DbFree(db, zStmt);
-    sqlite3ChangeCookie(pParse, iDb);
+    sqlite3OpenTable(pParse, iCursor, iDb, pSysSchema, OP_OpenRead);
+    sqlite3VdbeChangeP5(v, OPFLAG_SEEKEQ);
+    iSpaceId = getNewSpaceId(pParse, iCursor);
+    sqlite3OpenTable(pParse, iCursor, iDb, pSysSpace, OP_OpenWrite);
+    createSpace(pParse, iSpaceId, zStmt, iCursor, pSysSpace);
+    sqlite3OpenTable(pParse, iCursor, iDb, pSysIndex, OP_OpenWrite);
+    createImplicitIndices(pParse, iSpaceId, iCursor, pSysIndex);
+    sqlite3VdbeAddOp1(v, OP_Close, iCursor);
 
 #ifndef SQLITE_OMIT_AUTOINCREMENT
     /* Check to see if we need to create an sqlite_sequence table for
@@ -2059,8 +2246,8 @@ void sqlite3EndTable(
 #endif
 
     /* Reparse everything to update our internal data structures */
+    parseTableSchemaRecord(pParse, iDb, iSpaceId, zStmt); /* consumes zStmt */
   }
-
 
   /* Add the table to the in-memory representation of the database.
   */
@@ -3420,7 +3607,8 @@ void sqlite3CreateIndex(
     sqlite3BeginWriteOperation(pParse, 1, iDb);
 
     pSysIndex = sqlite3HashFind(
-      &pParse->db->aDb[0].pSchema->tblHash, TARANTOOL_INDEX
+      &pParse->db->aDb[0].pSchema->tblHash,
+      TARANTOOL_SYS_INDEX_NAME
     );
     if( NEVER(!pSysIndex) ) return;
 
@@ -3588,7 +3776,7 @@ void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists){
     sqlite3NestedParse(pParse,
                        "DELETE FROM %Q.%s WHERE id=%d AND iid=%d",
                        db->aDb[iDb].zDbSName,
-                       TARANTOOL_INDEX,
+                       TARANTOOL_SYS_INDEX_NAME,
                        SQLITE_PAGENO_TO_SPACEID(pIndex->tnum),
                        SQLITE_PAGENO_TO_INDEXID(pIndex->tnum));
     sqlite3ClearStatTables(pParse, iDb, "idx", pIndex->zName);

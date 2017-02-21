@@ -7,6 +7,16 @@
 */
 
 /*
+ * Tarantool system spaces.
+ */
+#define TARANTOOL_SYS_SCHEMA_NAME  "_schema"
+#define TARANTOOL_SYS_SPACE_NAME   "_space"
+#define TARANTOOL_SYS_INDEX_NAME   "_index"
+
+/* Max space id seen so far. */
+#define TARANTOOL_SYS_SCHEMA_MAXID_KEY "max_id"
+
+/*
  * SQLite uses the root page number to identify a Table or Index BTree.
  * We switched it to using Tarantool spaces and indices instead of the
  * BTrees. Hence the functions to encode index and space id in
@@ -44,6 +54,20 @@ int tarantoolSqlite3Delete(BtCursor *pCur, u8 flags);
 int tarantoolSqlite3IdxKeyCompare(BtCursor *pCur, UnpackedRecord *pUnpacked,
                                   int *res);
 
+
+/*
+ * Render "format" array for _space entry.
+ * Returns result size.
+ * If buf==NULL estimate result size.
+ */
+int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf);
+
+/*
+ * Format "opts" dictionary for _space entry.
+ * Returns result size.
+ * If buf==NULL estimate result size.
+ */
+int tarantoolSqlite3MakeTableOpts(Table *pTable, const char *zSql, void *buf);
 
 /*
  * Format "parts" array for _index entry.

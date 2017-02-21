@@ -66,53 +66,23 @@ static sqlite3 *db = NULL;
 int sql_schema_put(int idb, int argc, char **argv);
 
 /*
- * Add _space system space to SQLite in-memory schema.
- * End result: _space table is registered and accessible from SQL.
+ * Add system space to SQLite in-memory schema.
+ * End result: the table is registered and accessible from SQL.
  */
 static void
-sql_schema_put_sys_space()
+sql_schema_put_system_space(const char *name, int id, const char *sql)
 {
-	char sys_space_name[] = "_space";
-	char sys_space_pageno[16];
-	char sys_space_sql[] = "CREATE TABLE _space ("
-		"id INT PRIMARY KEY, "
-		"owner INT, name STR, engine STR, field_count INT, flags, format"
-	") WITHOUT ROWID";
-	char *sys_space_argv[] = {
-		sys_space_name,
-		sys_space_pageno,
-		sys_space_sql,
+	char pageno[16];
+	char *argv[] = {
+		(char *)name,
+		pageno,
+		(char *)sql,
 		NULL
 	};
-	snprintf(sys_space_pageno, sizeof(sys_space_pageno), "%d",
-		SQLITE_PAGENO_FROM_SPACEID_AND_INDEXID(BOX_SPACE_ID, 0)
+	snprintf(pageno, sizeof(pageno), "%d",
+		SQLITE_PAGENO_FROM_SPACEID_AND_INDEXID(id, 0)
 	);
-	sql_schema_put(0, 3, sys_space_argv);
-}
-
-/*
- * Add _index system space to SQLite in-memory schema.
- * End result: _index table is registered and accessible from SQL.
- */
-static void
-sql_schema_put_sys_index()
-{
-	char sys_index_name[] = "_index";
-	char sys_index_pageno[16];
-	char sys_index_sql[] = "CREATE TABLE _index ("
-		"id INT, iid INT, name STR, type STR, opts, parts, "
-		"PRIMARY KEY (id, iid)"
-	") WITHOUT ROWID";
-	char *sys_index_argv[] = {
-		sys_index_name,
-		sys_index_pageno,
-		sys_index_sql,
-		NULL
-	};
-	snprintf(sys_index_pageno, sizeof(sys_index_pageno), "%d",
-		SQLITE_PAGENO_FROM_SPACEID_AND_INDEXID(BOX_INDEX_ID, 0)
-	);
-	sql_schema_put(0, 3, sys_index_argv);
+	sql_schema_put(0, 3, argv);
 }
 
 void
@@ -125,8 +95,34 @@ sql_init()
 	} else {
 		/* XXX */
 	}
-	sql_schema_put_sys_space();
-	sql_schema_put_sys_index();
+
+	sql_schema_put_system_space(
+		TARANTOOL_SYS_SCHEMA_NAME,
+		BOX_SCHEMA_ID,
+		"CREATE TABLE "TARANTOOL_SYS_SCHEMA_NAME" ("
+			"key TEXT PRIMARY KEY, value"
+		") WITHOUT ROWID"
+	);
+
+	sql_schema_put_system_space(
+		TARANTOOL_SYS_SPACE_NAME,
+		BOX_SPACE_ID,
+		"CREATE TABLE "TARANTOOL_SYS_SPACE_NAME" ("
+			"id INT, iid INT, name TEXT, "
+			"type TEXT, opts, parts, "
+			"PRIMARY KEY (id, iid)"
+		") WITHOUT ROWID"
+	);
+
+	sql_schema_put_system_space(
+		TARANTOOL_SYS_INDEX_NAME,
+		BOX_INDEX_ID,
+		"CREATE TABLE "TARANTOOL_SYS_INDEX_NAME" ("
+			"id INT, iid INT, "
+			"name TEXT, type TEXT, opts, parts, "
+			"PRIMARY KEY (id, iid)"
+		") WITHOUT ROWID"
+	);
 }
 
 void
@@ -674,6 +670,51 @@ static const char *convertSqliteAffinity(int affinity)
 	case SQLITE_AFF_INTEGER:
 		return "integer";
 	}
+}
+
+/*
+ * Render "format" array for _space entry.
+ * Returns result size.
+ * If buf==NULL estimate result size.
+ *
+ * Ex: [{"name": "col1", "type": "integer"}, ... ]
+ */
+int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
+{
+	struct Column *aCol = pTable->aCol;
+	const struct Enc *enc = get_enc(buf);
+	char *base = buf, *p;
+	int i, n = pTable->nCol;
+	p = enc->encode_array(base, n);
+	for (i=0; i<n; i++) {
+		const char *t;
+		p = enc->encode_map(p, 2);
+		p = enc->encode_str(p, "name", 4);
+		p = enc->encode_str(p, aCol[i].zName, strlen(aCol[i].zName));
+		p = enc->encode_str(p, "type", 4);
+		t = aCol[i].affinity == SQLITE_AFF_BLOB ? "*" :
+			convertSqliteAffinity(aCol[i].affinity);
+		p = enc->encode_str(p, t, strlen(t));
+	}
+	return (int)(p - base);
+}
+
+/*
+ * Format "opts" dictionary for _space entry.
+ * Returns result size.
+ * If buf==NULL estimate result size.
+ *
+ * Ex: {"temporary": true, "sql": "CREATE TABLE student (name, grade)"}
+ */
+int tarantoolSqlite3MakeTableOpts(Table *pTable, const char *zSql, void *buf)
+{
+	(void)pTable;
+	const struct Enc *enc = get_enc(buf);
+	char *base = buf, *p;
+	p = enc->encode_map(base, 1);
+	p = enc->encode_str(p, "sql", 3);
+	p = enc->encode_str(p, zSql, strlen(zSql));
+	return (int)(p - base);
 }
 
 /*
