@@ -57,6 +57,8 @@ local method_codec           = {
     update  = internal.encode_update,
     upsert  = internal.encode_upsert,
     begin   = internal.encode_begin,
+    begin_two_phase = internal.encode_begin_two_phase,
+    prepare = internal.encode_prepare,
     commit  = internal.encode_commit,
     rollback = internal.encode_rollback,
     select  = function(buf, id, schema_id, tx_id, spaceno, indexno, key, opts)
@@ -738,6 +740,25 @@ end
 
 function remote_methods:rollback()
     return self:remote_tx_manage('rollback')
+end
+
+function remote_methods:prepare()
+    return self:remote_tx_manage('prepare')
+end
+
+function remote_methods:begin_two_phase(coordinator_id)
+    remote_check(self, 'begin_two_phase')
+    local deadline = self._deadlines[fiber_self()]
+    local timeout = deadline and max(0, deadline-fiber_time())
+    local tx_id = fiber_self().id()
+    local err, res = self._transport.perform_request(timeout, 'begin_two_phase',
+                                                     self._schema_id, tx_id,
+                                                     coordinator_id)
+    if not err or err == E_WRONG_SCHEMA_VERSION then
+        return true
+    else
+        box.error({code = err, reason = res})
+    end
 end
 
 function remote_methods:wait_state(state, timeout)

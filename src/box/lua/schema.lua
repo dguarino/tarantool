@@ -56,6 +56,8 @@ ffi.cdef[[
     /** \cond public */
     int
     box_txn_begin();
+    int
+    box_txn_begin_two_phase(uint64_t tx_id, uint32_t coordinator_id);
     /** \endcond public */
 
     struct port_entry {
@@ -226,6 +228,15 @@ box.begin = function()
         box.error()
     end
 end
+
+box.begin_two_phase = function(tx_id, coordinator_id)
+    check_param(tx_id, 'transaction identifier', 'number')
+    check_param(coordinator_id, 'coordinator identifier', 'number')
+    if builtin.box_txn_begin_two_phase(tx_id, coordinator_id) == -1 then
+        box.error()
+    end
+end
+
 -- box.commit yields, so it's defined as Lua/C binding
 -- box.rollback yields as well
 

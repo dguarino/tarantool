@@ -96,6 +96,10 @@ txn_begin(bool is_autocommit)
 	struct txn *txn = (struct txn *) mempool_alloc_xc(&txn_pool);
 	/* Initialize members explicitly to save time on memset() */
 	stailq_create(&txn->stmts);
+	txn->is_two_phase = false;
+	txn->in_prepare = false;
+	txn->tx_id = UINT64_MAX;
+	txn->coordinator_id = UINT32_MAX;
 	txn->n_rows = 0;
 	txn->is_autocommit = is_autocommit;
 	txn->has_triggers  = false;
@@ -108,6 +112,25 @@ txn_begin(bool is_autocommit)
 	/* fiber_on_yield/fiber_on_stop initialized by engine on demand */
 	fiber_set_txn(fiber(), txn);
 	return txn;
+}
+
+struct txn *
+txn_begin_two_phase(uint64_t tx_id, uint32_t coordinator_id)
+{
+	struct txn *txn = txn_begin(false);
+	txn->tx_id = tx_id;
+	txn->coordinator_id = coordinator_id;
+	txn->is_two_phase = true;
+	return txn;
+}
+
+void
+txn_prepare_two_phase(struct txn *txn)
+{
+	assert(txn == in_txn());
+	assert(! txn->in_prepare);
+	assert(txn->is_two_phase);
+	txn->in_prepare = true;
 }
 
 void
@@ -134,7 +157,12 @@ txn_begin_stmt(struct space *space)
 		txn = txn_begin(true);
 	else if (txn->in_sub_stmt > TXN_SUB_STMT_MAX)
 		tnt_raise(ClientError, ER_SUB_STMT_MAX);
+	else if (txn->in_prepare) {
+		assert(txn->is_two_phase);
+		tnt_raise(ClientError, ER_CHANGE_PREPARED);
+	}
 
+	assert(! txn->in_prepare);
 	Engine *engine = space->handler->engine;
 	txn_begin_in_engine(engine, txn);
 	struct txn_stmt *stmt = txn_stmt_new(txn);
@@ -152,6 +180,7 @@ void
 txn_commit_stmt(struct txn *txn, struct request *request)
 {
 	assert(txn->in_sub_stmt > 0);
+	assert(! txn->in_prepare);
 	/*
 	 * Run on_replace triggers. For now, disallow mutation
 	 * of tuples in the trigger.
@@ -247,8 +276,8 @@ void
 txn_commit(struct txn *txn)
 {
 	assert(txn == in_txn());
-
 	assert(stailq_empty(&txn->stmts) || txn->engine);
+	assert(! txn->is_two_phase || txn->in_prepare);
 
 	/* Do transaction conflict resolving */
 	if (txn->engine) {
@@ -355,6 +384,44 @@ box_txn_begin()
 }
 
 int
+box_txn_begin_two_phase(uint64_t tx_id, uint32_t coordinator_id)
+{
+	try {
+		if (in_txn())
+			tnt_raise(ClientError, ER_ACTIVE_TRANSACTION);
+		(void) txn_begin_two_phase(tx_id, coordinator_id);
+	} catch (Exception  *e) {
+		return -1; /* pass exception  through FFI */
+	}
+	return 0;
+}
+
+int
+box_txn_prepare_two_phase()
+{
+	struct txn *txn = in_txn();
+	if (! txn) {
+		diag_set(ClientError, ER_NO_ACTIVE_TRANSACTION);
+		return -1;
+	}
+	if (txn->in_prepare) {
+		diag_set(ClientError, ER_ALREADY_PREPARED);
+		return -1;
+	}
+	if (! txn->is_two_phase) {
+		diag_set(ClientError, ER_ILLEGAL_PARAMS,
+			 "can't prepare not two-phase transaction");
+		return -1;
+	}
+	try {
+		txn_prepare_two_phase(txn);
+	} catch (Exception *e) {
+		return -1;
+	}
+	return 0;
+}
+
+int
 box_txn_commit()
 {
 	struct txn *txn = in_txn();
@@ -368,6 +435,10 @@ box_txn_commit()
 		return 0;
 	if (txn->in_sub_stmt) {
 		diag_set(ClientError, ER_COMMIT_IN_SUB_STMT);
+		return -1;
+	}
+	if (txn->is_two_phase && !txn->in_prepare) {
+		diag_set(ClientError, ER_COMMIT_BEFORE_PREPARE);
 		return -1;
 	}
 	try {
