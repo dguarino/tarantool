@@ -671,6 +671,28 @@ box_process1(struct request *request, box_tuple_t **result)
 }
 
 int
+box_process_txn(struct xrow_header *header)
+{
+	uint32_t coordinator_id = header->coordinator_id;
+	switch(header->type) {
+		case IPROTO_BEGIN:
+			if (coordinator_id != 0)
+				return box_txn_begin_two_phase(header->tx_id,
+							       coordinator_id);
+			else
+				return box_txn_begin();
+		case IPROTO_COMMIT:
+			return box_txn_commit();
+		case IPROTO_ROLLBACK:
+			return box_txn_rollback();
+		case IPROTO_PREPARE:
+			return box_txn_prepare_two_phase();
+		default:
+			unreachable();
+	}
+}
+
+int
 box_select(struct port *port, uint32_t space_id, uint32_t index_id,
 	   int iterator, uint32_t offset, uint32_t limit,
 	   const char *key, const char *key_end)

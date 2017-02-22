@@ -1165,14 +1165,7 @@ tx_process_remote_txn(struct cmsg *m)
 			diag_set(ClientError, ER_ACTIVE_TRANSACTION);
 			goto error;
 		}
-		int rc;
-		uint32_t coordinator_id = msg->header.coordinator_id;
-		if (coordinator_id != 0)
-			rc = box_txn_begin_two_phase(msg->header.tx_id,
-						     coordinator_id);
-		else
-			rc = box_txn_begin();
-		if (rc != 0)
+		if (box_process_txn(&msg->header) != 0)
 			goto error;
 		struct txn *txn = in_txn();
 		assert(txn != NULL);
@@ -1188,24 +1181,11 @@ tx_process_remote_txn(struct cmsg *m)
 	txn = node->txn;
 	assert(txn != NULL);
 	tx_prepare_transaction_for_request(node);
-	if (type == IPROTO_COMMIT) {
-		if (box_txn_commit() != 0)
-			goto error;
+	if (box_process_txn(&msg->header) != 0)
+		goto error;
+	if (type != IPROTO_PREPARE && type != IPROTO_BEGIN)
 		node->txn = NULL;
-		goto ok;
-	}
-	if (type == IPROTO_ROLLBACK) {
-		if (box_txn_rollback() != 0)
-			goto error;
-		node->txn = NULL;
-		goto ok;
-	}
-	if (type == IPROTO_PREPARE) {
-		if (box_txn_prepare_two_phase() != 0)
-			goto error;
-		goto ok;
-	}
-	unreachable();
+	goto ok;
 error:
 	fiber_set_txn(fiber(), NULL);
 	iproto_reply_error_msg(out, msg);

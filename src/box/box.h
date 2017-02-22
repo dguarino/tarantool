@@ -314,6 +314,16 @@ box_truncate(uint32_t space_id);
 int
 box_process1(struct request *request, box_tuple_t **result);
 
+/**
+ * Process a request on a transaction
+ * begin/commit/rollback/prepare.
+ * @param header Header of the request.
+ * @retval  0 Success.
+ * @retval -1 Error.
+ */
+int
+box_process_txn(struct xrow_header *header);
+
 int
 boxk(int type, uint32_t space_id, const char *format, ...);
 
