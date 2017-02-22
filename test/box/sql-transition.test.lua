@@ -43,12 +43,12 @@ box.sql.execute("CREATE TABLE barfoo (bar, foo NUM PRIMARY KEY) WITHOUT ROWID")
 box.sql.execute("CREATE UNIQUE INDEX barfoo2 ON barfoo(bar)")
 
 -- prepare data
-box.space.barfoo:insert({'foo', 1})
-box.space.barfoo:insert({'bar', 2})
-box.space.barfoo:insert({'foobar', 1000})
+box.sql.execute("INSERT INTO barfoo VALUES ('foo', 1)")
+box.sql.execute("INSERT INTO barfoo VALUES ('bar', 2)")
+box.sql.execute("INSERT INTO barfoo VALUES ('foobar', 1000)")
 
 -- prove barfoo2 was created
-box.space.barfoo:insert({'xfoo', 1})
+box.sql.execute("INSERT INTO barfoo VALUES ('xfoo', 1)")
 
 box.sql.execute("SELECT foo, bar FROM barfoo")
 box.sql.execute("SELECT foo, bar FROM barfoo WHERE foo==2")
