@@ -93,15 +93,24 @@ recovery_fill_lsn(struct recovery *r, struct xrow_header *row);
  * it is represented by the last valid snapshot of memtx engine.
  * This is legacy from the time the entire box was single-engine.
  *
- * @param[out] vclock vclock of the last checkpoint
- * @retval         signature of the last checkpoint, or -1
- *                 in case of fresh boot
+ * @param seq           number of the checkpoint counting from
+ *                      the last one (0 for the last checkpoint,
+ *                      1 for the next to last, and so forth)
+ * @param[out] vclock   vclock of the checkpoint
+ * @retval              signature of the checkpoint, or -1
+ *                      in case the requested checkpoint
+ *                      does not exist
  *
- * The function may throw XlogError exception.
- * It is implemented in memtx_engine.cc
+ * The function is implemented in memtx_engine.cc
  */
-int
-recovery_last_checkpoint(struct vclock *vclock);
+int64_t
+recovery_get_checkpoint(int seq, struct vclock *vclock);
+
+static inline int64_t
+recovery_last_checkpoint(struct vclock *vclock)
+{
+	return recovery_get_checkpoint(0, vclock);
+}
 
 /**
  * Find out if there are new .xlog files since the current

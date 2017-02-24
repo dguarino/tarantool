@@ -105,10 +105,11 @@ struct MemtxEngine: public Engine {
 		m_snap_io_rate_limit = new_limit * 1024 * 1024;
 	}
 	/**
-	 * Return LSN of the most recent snapshot or -1 if there is
-	 * no snapshot.
+	 * Return LSN of the snapshot that was taken @seq snapshots
+	 * before the most recent one or -1 if there is no such
+	 * snapshot.
 	 */
-	int64_t lastCheckpoint(struct vclock *vclock);
+	int64_t getCheckpoint(int seq, struct vclock *vclock);
 	void recoverSnapshot();
 private:
 	void
@@ -120,8 +121,6 @@ private:
 	struct xdir m_snap_dir;
 	/** Limit disk usage of checkpointing (bytes per second). */
 	uint64_t m_snap_io_rate_limit;
-	struct vclock m_last_checkpoint;
-	bool m_has_checkpoint;
 	bool m_panic_on_wal_error;
 };
 
