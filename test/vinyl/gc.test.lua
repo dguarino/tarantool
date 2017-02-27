@@ -2,6 +2,9 @@ test_run = require('test_run').new()
 fiber = require('fiber')
 fio = require('fio')
 
+default_snapshot_count = box.cfg.snapshot_count
+box.cfg{snapshot_count=1}
+
 index_options = test_run:get_cfg('index_options')
 index_options.run_count_per_level = 1
 
@@ -25,3 +28,5 @@ file_count()
 -- Check that files left from dropped indexes are deleted on snapshot.
 s:drop() box.snapshot()
 file_count()
+
+box.cfg{snapshot_count=default_snapshot_count}

@@ -142,7 +142,12 @@ local dynamic_cfg = {
     read_only               = private.cfg_set_read_only,
     -- snapshot_daemon
     snapshot_period         = box.internal.snapshot_daemon.set_snapshot_period,
-    snapshot_count          = box.internal.snapshot_daemon.set_snapshot_count,
+    -- do nothing, affects next snapshot
+    snapshot_count          = function()
+        if math.floor(box.cfg.snapshot_count) ~= box.cfg.snapshot_count then
+            box.error(box.error.CFG, "snapshot_count", "must be an integer")
+        end
+    end,
     -- do nothing, affects new replicas, which query this value on start
     wal_dir_rescan_delay    = function() end,
     custom_proc_title       = function()

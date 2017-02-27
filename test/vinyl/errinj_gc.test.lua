@@ -4,6 +4,8 @@ fio = require('fio')
 
 errinj = box.error.injection
 
+box.cfg{snapshot_count=1}
+
 -- Temporary space for bumping lsn.
 temp = box.schema.space.create('temp')
 _ = temp:create_index('pk')
@@ -66,6 +68,9 @@ test_run:cmd('restart server default')
 test_run = require('test_run').new()
 fio = require('fio')
 
+default_snapshot_count = box.cfg.snapshot_count
+box.cfg{snapshot_count=1}
+
 s = box.space.test
 temp = box.space.temp
 
@@ -86,3 +91,5 @@ s:drop() box.snapshot()
 file_count()
 
 temp:drop()
+
+box.cfg{snapshot_count=default_snapshot_count}

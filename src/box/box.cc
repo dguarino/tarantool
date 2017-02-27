@@ -67,6 +67,7 @@
 #include "xrow_io.h"
 #include "authentication.h"
 #include "path_lock.h"
+#include "coeio_file.h"
 
 static char status[64] = "unknown";
 
@@ -1662,6 +1663,37 @@ box_atfork()
 	wal_atfork();
 }
 
+static void
+box_collect_garbage()
+{
+	int snapshot_count = cfg_geti("snapshot_count");
+	if (snapshot_count <= 0)
+		return; /* gc disabled in config */
+
+	struct vclock vclock;
+	if (recovery_get_checkpoint(snapshot_count - 1, &vclock) < 0)
+		return; /* nothing to do */
+
+	/* Delete engine-specific files. */
+	engine_collect_garbage(&vclock);
+
+	/* Delete xlog files. */
+	if (xdir_scan(&recovery->wal_dir) != 0) {
+		say_error("can't read wal_dir: %s",
+			  diag_last_error(diag_get())->errmsg);
+		return;
+	}
+	for (struct vclock *it = vclockset_first(&recovery->wal_dir.index);
+	     it != NULL && vclock_sum(it) < vclock_sum(&vclock);
+	     it = vclockset_next(&recovery->wal_dir.index, it)) {
+		char *filename = xdir_format_filename(&recovery->wal_dir,
+						      vclock_sum(it), NONE);
+		say_info("removing old xlog %s", filename);
+		if (coeio_unlink(filename) < 0 && errno != ENOENT)
+			say_syserror("error while removing %s", filename);
+	}
+}
+
 int
 box_snapshot()
 {
@@ -1690,6 +1722,7 @@ end:
 	if (rc)
 		engine_abort_checkpoint();
 	latch_unlock(&schema_lock);
+	box_collect_garbage();
 	box_snapshot_is_in_progress = false;
 	return rc;
 }

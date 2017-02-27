@@ -12,7 +12,6 @@ local PREFIX = 'snapshot_daemon'
 
 local daemon = {
     snapshot_period = 0;
-    snapshot_count = 6;
     fiber = nil;
     control = nil;
 }
@@ -89,65 +88,6 @@ local function process(self)
     if not make_snapshot(snaps[#snaps]) then
         return
     end
-
-    -- cleanup code
-    if daemon.snapshot_count == nil then
-        return
-    end
-
-    if not (self.snapshot_count > 0) then
-        return
-    end
-
-
-    -- reload snap list after snapshot
-    snaps = fio.glob(fio.pathjoin(box.cfg.snap_dir, '*.snap'))
-    local xlogs = fio.glob(fio.pathjoin(box.cfg.wal_dir, '*.xlog'))
-    if xlogs == nil then
-        log.error("can't read wal_dir %s: %s", box.cfg.wal_dir,
-                  errno.strerror())
-        return
-    end
-
-    while #snaps > self.snapshot_count do
-        local rm = snaps[1]
-        table.remove(snaps, 1)
-
-        log.info("removing old snapshot %s", rm)
-        if not fio.unlink(rm) then
-            log.error("error while removing %s: %s",
-                      rm, errno.strerror())
-            return
-        end
-    end
-
-
-    local snapno = fio.basename(snaps[1], '.snap')
-
-    while #xlogs > 0 do
-        if #xlogs < 2 then
-            break
-        end
-
-        if fio.basename(xlogs[1], '.xlog') > snapno then
-            break
-        end
-
-        if fio.basename(xlogs[2], '.xlog') > snapno then
-            break
-        end
-
-
-        local rm = xlogs[1]
-        table.remove(xlogs, 1)
-        log.info("removing old xlog %s", rm)
-
-        if not fio.unlink(rm) then
-            log.error("error while removing %s: %s",
-                      rm, errno.strerror())
-            return
-        end
-    end
 end
 
 local function daemon_fiber(self)
@@ -215,16 +155,6 @@ setmetatable(daemon, {
     __index = {
         set_snapshot_period = function()
             daemon.snapshot_period = box.cfg.snapshot_period
-            reload(daemon)
-            return
-        end,
-
-        set_snapshot_count = function()
-            if math.floor(box.cfg.snapshot_count) ~= box.cfg.snapshot_count then
-                box.error(box.error.CFG, "snapshot_count",
-                         "must be an integer")
-            end
-            daemon.snapshot_count = box.cfg.snapshot_count
             reload(daemon)
         end
     }

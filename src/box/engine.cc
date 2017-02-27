@@ -133,6 +133,12 @@ Engine::abortCheckpoint()
 }
 
 void
+Engine::collectGarbage(struct vclock *vclock)
+{
+	(void) vclock;
+}
+
+void
 Engine::join(struct xstream *stream)
 {
 	(void) stream;
@@ -333,6 +339,14 @@ engine_abort_checkpoint()
 	/* rollback snapshot creation */
 	engine_foreach(engine)
 		engine->abortCheckpoint();
+}
+
+void
+engine_collect_garbage(struct vclock *vclock)
+{
+	Engine *engine;
+	engine_foreach(engine)
+		engine->collectGarbage(vclock);
 }
 
 void

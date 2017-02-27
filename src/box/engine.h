@@ -157,6 +157,11 @@ public:
 	 * An error in one of the engines, abort checkpoint.
 	 */
 	virtual void abortCheckpoint();
+	/**
+	 * Remove files that are not needed to recover from
+	 * a snapshot with the given LSN or newer.
+	 */
+	virtual void collectGarbage(struct vclock *vclock);
 public:
 	/** Name of the engine. */
 	const char *name;
@@ -289,6 +294,9 @@ engine_commit_checkpoint(struct vclock *vclock);
 
 void
 engine_abort_checkpoint();
+
+void
+engine_collect_garbage(struct vclock *vclock);
 
 /**
  * Feed snapshot data as join events to the replicas.

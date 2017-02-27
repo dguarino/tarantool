@@ -58,6 +58,7 @@ struct VinylEngine: public Engine {
 	virtual void join(struct xstream *stream) override;
 	virtual int beginCheckpoint() override;
 	virtual int waitCheckpoint(struct vclock *vclock) override;
+	virtual void collectGarbage(struct vclock *vclock) override;
 public:
 	struct vy_env *env;
 };

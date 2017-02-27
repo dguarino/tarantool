@@ -7,6 +7,12 @@ fiber = require('fiber')
 fio = require('fio')
 ---
 ...
+default_snapshot_count = box.cfg.snapshot_count
+---
+...
+box.cfg{snapshot_count=1}
+---
+...
 index_options = test_run:get_cfg('index_options')
 ---
 ...
@@ -59,4 +65,7 @@ s:drop() box.snapshot()
 file_count()
 ---
 - 0
+...
+box.cfg{snapshot_count=default_snapshot_count}
+---
 ...
