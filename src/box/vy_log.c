@@ -33,6 +33,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -45,11 +46,12 @@
 #include <small/rlist.h>
 
 #include "assoc.h"
+#include "cbus.h"
 #include "coeio.h"
-#include "coeio_file.h"
 #include "diag.h"
 #include "errcode.h"
 #include "fiber.h"
+#include "ipc.h"
 #include "iproto_constants.h" /* IPROTO_INSERT */
 #include "latch.h"
 #include "say.h"
@@ -153,6 +155,20 @@ struct vy_log {
 	 * xlog object doesn't support concurrent accesses.
 	 */
 	struct latch latch;
+	/**
+	 * IO thread.
+	 *
+	 * We don't want to block the TX thread on IO operations, so
+	 * we need a dedicated background thread which would perform
+	 * writes to xlog. We can't use coeio for this, because xlog
+	 * can only be used from a single thread, while coeio uses a
+	 * pool of workers.
+	 */
+	struct cord io_cord;
+	/** Pipe from the TX to the IO thread. */
+	struct cpipe io_pipe;
+	/** Pipe from the IO to the TX thread. */
+	struct cpipe tx_pipe;
 	/** Next ID to use for a range. Used by vy_log_next_range_id(). */
 	int64_t next_range_id;
 	/** Next ID to use for a run. Used by vy_log_next_run_id(). */
@@ -170,6 +186,82 @@ struct vy_log {
 	/** Records awaiting to be written to disk. */
 	struct vy_log_record tx_buf[VY_LOG_TX_BUF_SIZE];
 };
+
+typedef int (*vy_log_io_cb)(va_list ap);
+
+/**
+ * Task passed to the IO thread in order to invoke
+ * an arbitaray callback.
+ */
+struct vy_log_io_task {
+	/** Inter-cord message. */
+	struct cmsg cmsg;
+	/** Condition variable signaled when the task is done. */
+	struct ipc_cond cond;
+	/** Boolean flag set when the task is done. */
+	bool is_done;
+	/** Callback return value. */
+	int rc;
+	/** Callback diagnostic area. */
+	struct diag diag;
+	/** Callback function. */
+	vy_log_io_cb cb;
+	/** Callback arguments. */
+	va_list ap;
+};
+
+/** Execute a callback on behalf of the IO thread. */
+static void
+vy_log_io_call_f(struct cmsg *cmsg)
+{
+	struct vy_log_io_task *task = container_of(cmsg,
+				struct vy_log_io_task, cmsg);
+	task->rc = task->cb(task->ap);
+	if (task->rc != 0)
+		diag_move(diag_get(), &task->diag);
+}
+
+/** Signal the callee that the callback has completed. */
+static void
+vy_log_io_call_done_f(struct cmsg *cmsg)
+{
+	struct vy_log_io_task *task = container_of(cmsg,
+				struct vy_log_io_task, cmsg);
+	task->is_done = true;
+	ipc_cond_signal(&task->cond);
+}
+
+/**
+ * Invoke an arbitrary function on behalf of the IO thread.
+ * Blocks the current fiber until the callback is complete.
+ */
+static int
+vy_log_io_call(struct vy_log *log, vy_log_io_cb cb, ...)
+{
+	struct cmsg_hop vy_log_io_route[] = {
+		{vy_log_io_call_f, &log->tx_pipe},
+		{vy_log_io_call_done_f, NULL},
+	};
+	struct vy_log_io_task task;
+
+	cmsg_init(&task.cmsg, vy_log_io_route);
+	ipc_cond_create(&task.cond);
+	task.is_done = false;
+	task.rc = 0;
+	diag_create(&task.diag);
+	task.cb = cb;
+	va_start(task.ap, cb);
+
+	cpipe_push(&log->io_pipe, &task.cmsg);
+	while (!task.is_done)
+		ipc_cond_wait(&task.cond);
+
+	va_end(task.ap);
+	ipc_cond_destroy(&task.cond);
+	if (task.rc != 0)
+		diag_move(&task.diag, diag_get());
+	return task.rc;
+}
 
 /** Recovery context. */
 struct vy_recovery {
@@ -578,6 +670,28 @@ fail:
 	return -1;
 }
 
+static int
+vy_log_io_f(va_list ap)
+{
+	struct vy_log *log = va_arg(ap, struct vy_log *);
+
+	coeio_enable();
+
+	struct cbus_endpoint endpoint;
+	cbus_join(&endpoint, "vylog", fiber_schedule_cb, fiber());
+
+	cpipe_create(&log->tx_pipe, "tx");
+
+	cbus_loop(&endpoint);
+
+	if (log->xlog != NULL) {
+		xlog_close(log->xlog, false);
+		free(log->xlog);
+		log->xlog = NULL;
+	}
+	return 0;
+}
+
 struct vy_log *
 vy_log_new(const char *dir, vy_log_gc_cb gc_cb, void *gc_arg)
 {
@@ -594,10 +708,15 @@ vy_log_new(const char *dir, vy_log_gc_cb gc_cb, void *gc_arg)
 		goto fail_free;
 	}
 
+	if (cord_costart(&log->io_cord, "vylog", vy_log_io_f, log) != 0)
+		goto fail_free;
+
+	cpipe_create(&log->io_pipe, "vylog");
 	latch_create(&log->latch);
 
 	log->gc_cb = gc_cb;
 	log->gc_arg = gc_arg;
+
 	return log;
 
 fail_free:
@@ -607,18 +726,20 @@ fail:
 	return NULL;
 }
 
-static ssize_t
+static int
 vy_log_flush_f(va_list ap)
 {
 	struct vy_log *log = va_arg(ap, struct vy_log *);
-	bool *need_rollback = va_arg(ap, bool *);
 
-	/*
-	 * xlog_tx_rollback() must not be called after
-	 * xlog_tx_commit(), even if the latter failed.
-	 */
-	*need_rollback = false;
-
+	xlog_tx_begin(log->xlog);
+	for (int i = 0; i < log->tx_end; i++) {
+		struct xrow_header row;
+		if (vy_log_record_encode(&log->tx_buf[i], &row) < 0 ||
+		    xlog_write_row(log->xlog, &row) < 0) {
+			xlog_tx_rollback(log->xlog);
+			return -1;
+		}
+	}
 	if (xlog_tx_commit(log->xlog) < 0 ||
 	    xlog_flush(log->xlog) < 0)
 		return -1;
@@ -640,53 +761,18 @@ vy_log_flush(struct vy_log *log)
 	if (log->tx_end == 0)
 		return 0; /* nothing to do */
 
-	/*
-	 * Encode buffered records.
-	 *
-	 * Ideally, we'd do it from a coeio task, but this is
-	 * impossible as an xlog's buffer cannot be written to
-	 * from multiple threads due to debug checks in the
-	 * slab allocator.
-	 */
-	xlog_tx_begin(log->xlog);
-	for (int i = 0; i < log->tx_end; i++) {
-		struct xrow_header row;
-		if (vy_log_record_encode(&log->tx_buf[i], &row) < 0 ||
-		    xlog_write_row(log->xlog, &row) < 0) {
-			xlog_tx_rollback(log->xlog);
-			return -1;
-		}
-	}
-	/*
-	 * Do actual disk writes in a background fiber
-	 * so as not to block the tx thread.
-	 */
-	bool need_rollback = true;
-	if (coio_call(vy_log_flush_f, log, &need_rollback) < 0) {
-		if (need_rollback) {
-			/* coio_call() failed due to OOM. */
-			xlog_tx_rollback(log->xlog);
-		}
+	if (vy_log_io_call(log, vy_log_flush_f, log) != 0)
 		return -1;
-	}
 
 	/* Success. Reset the buffer. */
 	log->tx_end = 0;
 	return 0;
 }
 
-/**
- * Open the vinyl metadata log file for appending, or create a new one
- * if it doesn't exist. On success, this function flushes all pending
- * records written with vy_log_write() before the log was opened.
- *
- * Return 0 on success, -1 on failure.
- */
 static int
-vy_log_open_or_create(struct vy_log *log)
+vy_log_open_or_create_f(va_list ap)
 {
-	assert(log->xlog == NULL);
-	assert(latch_owner(&log->latch) == NULL);
+	struct vy_log *log = va_arg(ap, struct vy_log *);
 
 	struct xlog *xlog = malloc(sizeof(*xlog));
 	if (xlog == NULL) {
@@ -715,11 +801,6 @@ vy_log_open_or_create(struct vy_log *log)
 	}
 
 	log->xlog = xlog;
-	if (vy_log_flush(log) < 0) {
-		/* Abort recovery if we can't flush the log. */
-		log->xlog = NULL;
-		goto fail_close_xlog;
-	}
 	return 0;
 
 fail_close_xlog:
@@ -728,6 +809,29 @@ fail_free_xlog:
 	free(xlog);
 fail:
 	return -1;
+}
+
+/**
+ * Open the vinyl metadata log file for appending, or create a new one
+ * if it doesn't exist. On success, this function flushes all pending
+ * records written with vy_log_write() before the log was opened.
+ *
+ * Return 0 on success, -1 on failure.
+ */
+static int
+vy_log_open_or_create(struct vy_log *log)
+{
+	assert(log->xlog == NULL);
+	assert(latch_owner(&log->latch) == NULL);
+
+	if (vy_log_io_call(log, vy_log_open_or_create_f, log))
+		return -1;
+
+	if (vy_log_flush(log) < 0) {
+		/* Abort recovery if we can't flush the log. */
+		return -1;
+	}
+	return 0;
 }
 
 int
@@ -741,10 +845,9 @@ vy_log_create(struct vy_log *log)
 void
 vy_log_delete(struct vy_log *log)
 {
-	if (log->xlog != NULL) {
-		xlog_close(log->xlog, false);
-		free(log->xlog);
-	}
+	cbus_stop_loop(&log->io_pipe);
+	if (cord_join(&log->io_cord) != 0)
+		panic_syserror("vinyl metadata log: thread join failed");
 	if (log->recovery != NULL)
 		vy_recovery_delete(log->recovery);
 	latch_destroy(&log->latch);
@@ -821,6 +924,15 @@ vy_log_gc_incomplete_cb_func(const struct vy_log_record *record, void *cb_arg)
 	return 0;
 }
 
+static int
+vy_log_end_recovery_f(va_list ap)
+{
+	struct vy_log *log = va_arg(ap, struct vy_log *);
+
+	vy_recovery_iterate(log->recovery, vy_log_gc_incomplete_cb_func, log);
+	return 0;
+}
+
 int
 vy_log_end_recovery(struct vy_log *log)
 {
@@ -837,7 +949,7 @@ vy_log_end_recovery(struct vy_log *log)
 	 * or not inserted into a range. We need to delete such runs
 	 * on recovery.
 	 */
-	vy_recovery_iterate(log->recovery, vy_log_gc_incomplete_cb_func, log);
+	vy_log_io_call(log, vy_log_end_recovery_f, log);
 
 	vy_recovery_delete(log->recovery);
 	log->recovery = NULL;
@@ -889,7 +1001,7 @@ vy_log_gc_deleted_cb_func(const struct vy_log_record *record, void *cb_arg)
  * current log file to a vy_recovery struct, creates a new xlog, and
  * then writes the records returned by vy_recovery to the new xlog.
  */
-static ssize_t
+static int
 vy_log_rotate_f(va_list ap)
 {
 	struct vy_log *log = va_arg(ap, struct vy_log *);
@@ -902,38 +1014,42 @@ vy_log_rotate_f(va_list ap)
 	char path[PATH_MAX];
 	vy_log_snprint_path(path, sizeof(path), log->dir, signature);
 
-	struct xlog xlog;
+	struct xlog *xlog = malloc(sizeof(*xlog));
+	if (xlog == NULL) {
+		diag_set(OutOfMemory, sizeof(*xlog), "malloc", "struct xlog");
+		goto err_alloc_xlog;
+	}
 	struct xlog_meta meta = {
 		.filetype = VY_LOG_TYPE,
 	};
-	if (xlog_create(&xlog, path, &meta) < 0)
+	if (xlog_create(xlog, path, &meta) < 0)
 		goto err_create_xlog;
 
-	if (vy_recovery_iterate(recovery, vy_log_rotate_cb_func,
-				&xlog) < 0)
+	if (vy_recovery_iterate(recovery, vy_log_rotate_cb_func, xlog) < 0)
 		goto err_write_xlog;
 
-	if (xlog_flush(&xlog) < 0 ||
-	    xlog_sync(&xlog) < 0 ||
-	    xlog_rename(&xlog) < 0)
+	if (xlog_flush(xlog) < 0 ||
+	    xlog_sync(xlog) < 0 ||
+	    xlog_rename(xlog) < 0)
 		goto err_write_xlog;
 
 	/* Cleanup unused runs. */
-	struct xlog *old_xlog = log->xlog;
-	log->xlog = &xlog;
 	vy_recovery_iterate(recovery, vy_log_gc_deleted_cb_func, log);
-	log->xlog = old_xlog;
-	xlog_flush(&xlog);
+	xlog_flush(xlog);
 
 	vy_recovery_delete(recovery);
-	xlog_close(&xlog, false);
+
+	log->xlog = xlog;
+	log->signature = signature;
 	return 0;
 
 err_write_xlog:
-	if (unlink(xlog.filename) < 0)
-		say_syserror("failed to delete file '%s'", xlog.filename);
-	xlog_close(&xlog, false);
+	if (unlink(xlog->filename) < 0)
+		say_syserror("failed to delete file '%s'", xlog->filename);
+	xlog_close(xlog, false);
 err_create_xlog:
+	free(xlog);
+err_alloc_xlog:
 	vy_recovery_delete(recovery);
 err_recovery:
 	return -1;
@@ -971,50 +1087,18 @@ vy_log_rotate(struct vy_log *log, int64_t signature)
 	 */
 	if (vy_log_flush(log) < 0) {
 		latch_unlock(&log->latch);
-		goto err_rotate;
+		goto fail;
 	}
-	/* Do actual work from coeio so as not to stall tx thread. */
-	if (coio_call(vy_log_rotate_f, log, signature) < 0) {
+	/* Do actual work from the io thread so as not to stall tx thread. */
+	if (vy_log_io_call(log, vy_log_rotate_f, log, signature) != 0) {
 		latch_unlock(&log->latch);
-		goto err_rotate;
+		goto fail;
 	}
 	latch_unlock(&log->latch);
 
-	/*
-	 * The new xlog was successfully created. Open it now.
-	 * It would be better to simply reuse the xlog struct
-	 * which was used for writing the xlog, but unfortunately
-	 * this is impossible, because an xlog struct can't be
-	 * used by different threads due to debug checks in the
-	 * slab allocator.
-	 */
-	char path[PATH_MAX];
-	vy_log_snprint_path(path, sizeof(path), log->dir, signature);
-
-	struct xlog *xlog = malloc(sizeof(*xlog));
-	if (xlog == NULL) {
-		diag_set(OutOfMemory, sizeof(*xlog), "malloc", "struct xlog");
-		goto err_alloc_xlog;
-	}
-
-	if (xlog_open(xlog, path) < 0)
-		goto err_open_xlog;
-
-	xlog_close(log->xlog, false);
-	free(log->xlog);
-
-	log->xlog = xlog;
-	log->signature = signature;
-
 	say_debug("%s: complete", __func__);
 	return 0;
-
-err_open_xlog:
-	free(xlog);
-err_alloc_xlog:
-	if (coeio_unlink(path) < 0)
-		say_syserror("failed to delete file '%s'", path);
-err_rotate:
+fail:
 	say_debug("%s: failed", __func__);
 	return -1;
 }
