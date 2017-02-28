@@ -56,8 +56,8 @@ box.space.test:auto_increment{'after snapshot and restart - one more row'}
 --  
 --  check that panic is true
 --
-box.cfg{panic_on_wal_error=true}
-box.cfg.panic_on_wal_error
+box.cfg{force_recovery=false}
+box.cfg.force_recovery
 -- 
 -- try to start the replica, ha-ha
 -- (replication should fail, some rows are missing)

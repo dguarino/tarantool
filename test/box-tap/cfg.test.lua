@@ -84,9 +84,9 @@ test:is(box.cfg.wal_mode, "write", "wal_mode default value")
 -- box.cfg{wal_mode = require('msgpack').NULL}
 -- test:is(box.cfg.wal_mode, "write", "wal_mode default value")
 
-test:is(box.cfg.panic_on_wal_error, true, "panic_on_wal_mode default value")
+test:is(box.cfg.force_recovery, false, "force_recovery default value")
 box.cfg{panic_on_wal_error=false}
-test:is(box.cfg.panic_on_wal_error, false, "panic_on_wal_mode new value")
+test:is(box.cfg.force_recovery, true, "force_recovery new value")
 
 test:is(box.cfg.wal_dir_rescan_delay, 2, "wal_dir_rescan_delay default value")
 box.cfg{wal_dir_rescan_delay=0.2}
@@ -157,12 +157,12 @@ test:is(run_script(code), PANIC, 'snap_dir is invalid')
 code = [[ box.cfg{ wal_dir='invalid' } ]]
 test:is(run_script(code), PANIC, 'wal_dir is invalid')
 
-test:is(box.cfg.logger_nonblock, true, "logger_nonblock default value")
+test:is(box.cfg.log_nonblock, true, "log_nonblock default value")
 code = [[
 box.cfg{logger_nonblock = false }
-os.exit(box.cfg.logger_nonblock == false and 0 or 1)
+os.exit(box.cfg.log_nonblock == false and 0 or 1)
 ]]
-test:is(run_script(code), 0, "logger_nonblock new value")
+test:is(run_script(code), 0, "log_nonblock new value")
 
 -- box.cfg { listen = xx }
 local path = './tarantool.sock'

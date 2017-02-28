@@ -70,7 +70,7 @@ enum {
 };
 
 void
-memtx_tuple_init(float tuple_arena_max_size, uint32_t objsize_min,
+memtx_tuple_init(uint64_t tuple_arena_max_size, uint32_t objsize_min,
 		 uint32_t objsize_max, float alloc_factor)
 {
 	/* Apply lowest allowed objsize bounds */
@@ -88,8 +88,7 @@ memtx_tuple_init(float tuple_arena_max_size, uint32_t objsize_min,
 	 * Ensure that quota is a multiple of slab_size, to
 	 * have accurate value of quota_used_ratio
 	 */
-	size_t prealloc = small_align(tuple_arena_max_size * 1024
-				      * 1024 * 1024, slab_size);
+	size_t prealloc = small_align(tuple_arena_max_size, slab_size);
 	/** Preallocate entire quota. */
 	quota_init(&memtx_quota, prealloc);
 

@@ -119,7 +119,7 @@ memtx_build_secondary_keys(struct space *space, void *param)
 
 MemtxEngine::MemtxEngine(const char *snap_dirname, bool panic_on_snap_error,
 			 bool panic_on_wal_error,
-			 float tuple_arena_max_size, uint32_t objsize_min,
+			 uint64_t tuple_arena_max_size, uint32_t objsize_min,
 			 uint32_t objsize_max, float alloc_factor)
 	:Engine("memtx", &memtx_tuple_format_vtab),
 	m_checkpoint(0),

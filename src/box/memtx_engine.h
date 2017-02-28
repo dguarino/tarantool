@@ -72,7 +72,7 @@ extern struct mempool memtx_index_extent_pool;
 
 struct MemtxEngine: public Engine {
 	MemtxEngine(const char *snap_dirname, bool panic_on_snap_error,
-		    bool panic_on_wal_error, float tuple_arena_max_size,
+		    bool panic_on_wal_error, uint64_t tuple_arena_max_size,
 		    uint32_t objsize_min, uint32_t objsize_max,
 		    float alloc_factor);
 	~MemtxEngine();

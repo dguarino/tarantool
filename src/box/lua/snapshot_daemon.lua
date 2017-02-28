@@ -78,10 +78,10 @@ end
 
 -- check filesystem and current time
 local function process(self)
-    local snaps = fio.glob(fio.pathjoin(box.cfg.snap_dir, '*.snap'))
+    local snaps = fio.glob(fio.pathjoin(box.cfg.memtx_dir, '*.snap'))
 
     if snaps == nil then
-        log.error("can't read snap_dir %s: %s", box.cfg.snap_dir,
+        log.error("can't read memtx_dir %s: %s", box.cfg.memtx_dir,
                   errno.strerror())
         return
     end
@@ -101,7 +101,7 @@ local function process(self)
 
 
     -- reload snap list after snapshot
-    snaps = fio.glob(fio.pathjoin(box.cfg.snap_dir, '*.snap'))
+    snaps = fio.glob(fio.pathjoin(box.cfg.memtx_dir, '*.snap'))
     local xlogs = fio.glob(fio.pathjoin(box.cfg.wal_dir, '*.xlog'))
     if xlogs == nil then
         log.error("can't read wal_dir %s: %s", box.cfg.wal_dir,
@@ -214,17 +214,17 @@ end
 setmetatable(daemon, {
     __index = {
         set_snapshot_period = function()
-            daemon.snapshot_period = box.cfg.snapshot_period
+            daemon.snapshot_period = box.cfg.checkpoint_interval
             reload(daemon)
             return
         end,
 
         set_snapshot_count = function()
-            if math.floor(box.cfg.snapshot_count) ~= box.cfg.snapshot_count then
-                box.error(box.error.CFG, "snapshot_count",
+            if math.floor(box.cfg.checkpoint_count) ~= box.cfg.checkpoint_count then
+                box.error(box.error.CFG, "checkpoint_count",
                          "must be an integer")
             end
-            daemon.snapshot_count = box.cfg.snapshot_count
+            daemon.snapshot_count = box.cfg.checkpoint_count
             reload(daemon)
         end
     }

@@ -33,7 +33,7 @@ test_run:cmd("setopt delimiter ';'")
 
 for i = 1, 100 do
     fiber.sleep(PERIOD)
-    snaps = fio.glob(fio.pathjoin(box.cfg.snap_dir, '*.snap'))
+    snaps = fio.glob(fio.pathjoin(box.cfg.memtx_dir, '*.snap'))
     xlogs = fio.glob(fio.pathjoin(box.cfg.wal_dir, '*.xlog'))
 
     if #snaps == 2 then

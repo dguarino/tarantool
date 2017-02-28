@@ -118,7 +118,7 @@ relay_final_join(int fd, uint64_t sync, struct vclock *start_vclock,
 	struct relay relay;
 	relay_create(&relay, fd, sync, relay_send_final_join_row);
 	relay.r = recovery_new(cfg_gets("wal_dir"),
-			       cfg_geti("panic_on_wal_error"),
+			       !cfg_geti("force_recovery"),
 			       start_vclock);
 	vclock_copy(&relay.stop_vclock, stop_vclock);
 	auto scope_guard = make_scoped_guard([&]{
@@ -220,7 +220,7 @@ relay_subscribe(int fd, uint64_t sync, struct server *server,
 	struct relay relay;
 	relay_create(&relay, fd, sync, relay_send_subscribe_row);
 	relay.r = recovery_new(cfg_gets("wal_dir"),
-			       cfg_geti("panic_on_wal_error"),
+			       !cfg_geti("force_recovery"),
 			       replica_clock);
 	relay.r->server_id = server->id;
 	relay.wal_dir_rescan_delay = cfg_getd("wal_dir_rescan_delay");

@@ -58,7 +58,7 @@ test_run:cmd("setopt delimiter ';'")
 ...
 for i = 1, 100 do
     fiber.sleep(PERIOD)
-    snaps = fio.glob(fio.pathjoin(box.cfg.snap_dir, '*.snap'))
+    snaps = fio.glob(fio.pathjoin(box.cfg.memtx_dir, '*.snap'))
     xlogs = fio.glob(fio.pathjoin(box.cfg.wal_dir, '*.xlog'))
 
     if #snaps == 2 then
@@ -92,7 +92,7 @@ space:drop()
 ...
 box.cfg{ snapshot_count = .2 }
 ---
-- error: 'Incorrect value for option ''snapshot_count'': must be an integer'
+- error: 'Incorrect value for option ''checkpoint_count'': must be an integer'
 ...
 daemon = box.internal.snapshot_daemon
 ---
