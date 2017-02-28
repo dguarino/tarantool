@@ -3420,7 +3420,7 @@ void sqlite3CreateIndex(
     sqlite3BeginWriteOperation(pParse, 1, iDb);
 
     pSysIndex = sqlite3HashFind(
-      &pParse->db->aDb[0].pSchema->tblHash, TARANTOOL_INDEX
+      &pParse->db->aDb[0].pSchema->tblHash, TARANTOOL_SYS_INDEX_NAME
     );
     if( NEVER(!pSysIndex) ) return;
 
@@ -3588,7 +3588,7 @@ void sqlite3DropIndex(Parse *pParse, SrcList *pName, int ifExists){
     sqlite3NestedParse(pParse,
                        "DELETE FROM %Q.%s WHERE id=%d AND iid=%d",
                        db->aDb[iDb].zDbSName,
-                       TARANTOOL_INDEX,
+                       TARANTOOL_SYS_INDEX_NAME,
                        SQLITE_PAGENO_TO_SPACEID(pIndex->tnum),
                        SQLITE_PAGENO_TO_INDEXID(pIndex->tnum));
     sqlite3ClearStatTables(pParse, iDb, "idx", pIndex->zName);
