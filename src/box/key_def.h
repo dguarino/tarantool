@@ -153,13 +153,6 @@ struct opt_def {
 #define OPT_DEF(key, type, opts, field) \
 	{ key, type, offsetof(opts, field), sizeof(((opts *)0)->field) }
 
-/*
- * Option type is checked but the value is discarded.
- * Opt_set() treats opt_def-s with negative offsets as dummy ones.
- */
-#define DUMMY_OPT_DEF(key, type) \
-	{ key, type, -1, 1 }
-
 enum rtree_index_distance_type {
 	 /* Euclid distance, sqrt(dx*dx + dy*dy) */
 	RTREE_INDEX_DISTANCE_TYPE_EUCLID,
@@ -212,6 +205,11 @@ struct key_opts {
 	 * LSN from the time of index creation.
 	 */
 	int64_t lsn;
+	/**
+	 * SQL statement that produced this index.
+	 * Currently unused (hence the minimal size).
+	 */
+	char sql[1];
 };
 
 extern const struct key_opts key_opts_default;
@@ -360,6 +358,11 @@ struct space_opts {
 	 * - changes are not part of a snapshot
 	 */
 	bool temporary;
+	/**
+	 * SQL statement that produced this space.
+	 * Currently unused, hence the minimal size.
+	 */
+	char sql[1];
 };
 
 extern const struct space_opts space_opts_default;

@@ -211,22 +211,7 @@ opt_set(void *opts, const struct opt_def *def, const char **val)
 	double dval;
 	uint32_t str_len;
 	const char *str;
-	int64_t dummy_buf[1];
 	char *opt = ((char *) opts) + def->offset;
-	/* DUMMY_OPT_DEF ? */
-	if (def->offset < 0) {
-		opt = (char*)dummy_buf;
-		/* OPT_STR copies at most def->len - 1 bytes*/
-		assert(def->len != 0);
-		assert(def->len <= sizeof(dummy_buf));
-		/* OPT_BOOL: assume OPT_INT checks suffice */
-		/* OPT_INT */
-		assert(sizeof(dummy_buf) >= sizeof(uint64_t));
-		assert(alignof(dummy_buf) >= alignof(uint64_t));
-		/* OPT_DOUBLE */
-		assert(sizeof(dummy_buf) >= sizeof(double));
-		assert(alignof(dummy_buf) >= alignof(double));
-	}
 	switch (def->type) {
 	case OPT_BOOL:
 		if (mp_typeof(**val) != MP_BOOL)
