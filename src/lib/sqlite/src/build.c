@@ -2343,95 +2343,6 @@ void sqlite3RootPageMoved(sqlite3 *db, int iDb, int iFrom, int iTo){
 #endif
 
 /*
-** Write code to erase the table with root-page iTable from database iDb.
-** Also write code to modify the sqlite_master table and internal schema
-** if a root-page of another table is moved by the btree-layer whilst
-** erasing iTable (this can happen with an auto-vacuum database).
-*/ 
-static void destroyRootPage(Parse *pParse, int iTable, int iDb){
-  Vdbe *v = sqlite3GetVdbe(pParse);
-  int r1 = sqlite3GetTempReg(pParse);
-  assert( iTable>1 );
-  sqlite3VdbeAddOp3(v, OP_Destroy, iTable, r1, iDb);
-  sqlite3MayAbort(pParse);
-#ifndef SQLITE_OMIT_AUTOVACUUM
-  /* OP_Destroy stores an in integer r1. If this integer
-  ** is non-zero, then it is the root page number of a table moved to
-  ** location iTable. The following code modifies the sqlite_master table to
-  ** reflect this.
-  **
-  ** The "#NNN" in the SQL is a special constant that means whatever value
-  ** is in register NNN.  See grammar rules associated with the TK_REGISTER
-  ** token for additional information.
-  */
-  sqlite3NestedParse(pParse, 
-     "UPDATE %Q.%s SET rootpage=%d WHERE #%d AND rootpage=#%d",
-     pParse->db->aDb[iDb].zDbSName, MASTER_NAME, iTable, r1, r1);
-#endif
-  sqlite3ReleaseTempReg(pParse, r1);
-}
-
-/*
-** Write VDBE code to erase table pTab and all associated indices on disk.
-** Code to update the sqlite_master tables and internal schema definitions
-** in case a root-page belonging to another table is moved by the btree layer
-** is also added (this can happen with an auto-vacuum database).
-*/
-static void destroyTable(Parse *pParse, Table *pTab){
-#ifdef SQLITE_OMIT_AUTOVACUUM
-  Index *pIdx;
-  int iDb = sqlite3SchemaToIndex(pParse->db, pTab->pSchema);
-  destroyRootPage(pParse, pTab->tnum, iDb);
-  for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext){
-    destroyRootPage(pParse, pIdx->tnum, iDb);
-  }
-#else
-  /* If the database may be auto-vacuum capable (if SQLITE_OMIT_AUTOVACUUM
-  ** is not defined), then it is important to call OP_Destroy on the
-  ** table and index root-pages in order, starting with the numerically 
-  ** largest root-page number. This guarantees that none of the root-pages
-  ** to be destroyed is relocated by an earlier OP_Destroy. i.e. if the
-  ** following were coded:
-  **
-  ** OP_Destroy 4 0
-  ** ...
-  ** OP_Destroy 5 0
-  **
-  ** and root page 5 happened to be the largest root-page number in the
-  ** database, then root page 5 would be moved to page 4 by the 
-  ** "OP_Destroy 4 0" opcode. The subsequent "OP_Destroy 5 0" would hit
-  ** a free-list page.
-  */
-  int iTab = pTab->tnum;
-  int iDestroyed = 0;
-
-  while( 1 ){
-    Index *pIdx;
-    int iLargest = 0;
-
-    if( iDestroyed==0 || iTab<iDestroyed ){
-      iLargest = iTab;
-    }
-    for(pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext){
-      int iIdx = pIdx->tnum;
-      assert( pIdx->pSchema==pTab->pSchema );
-      if( (iDestroyed==0 || (iIdx<iDestroyed)) && iIdx>iLargest ){
-        iLargest = iIdx;
-      }
-    }
-    if( iLargest==0 ){
-      return;
-    }else{
-      int iDb = sqlite3SchemaToIndex(pParse->db, pTab->pSchema);
-      assert( iDb>=0 && iDb<pParse->db->nDb );
-      destroyRootPage(pParse, iLargest, iDb);
-      iDestroyed = iLargest;
-    }
-  }
-#endif
-}
-
-/*
 ** Remove entries from the sqlite_statN tables (for N in (1,2,3))
 ** after a DROP INDEX or DROP TABLE command.
 */
@@ -2500,19 +2411,26 @@ void sqlite3CodeDropTable(Parse *pParse, Table *pTab, int iDb, int isView){
   }
 #endif
 
-  /* Drop all SQLITE_MASTER table and index entries that refer to the
-  ** table. The program name loops through the master table and deletes
-  ** every row that refers to a table of the same name as the one being
-  ** dropped. Triggers are handled separately because a trigger can be
+  /* Drop all _space and _index entries that refer to the
+  ** table. The program loops through the _index & _space tables and deletes
+  ** every row that refers to a table.
+  ** Triggers are handled separately because a trigger can be
   ** created in the temp database that refers to a table in another
   ** database.
   */
-  sqlite3NestedParse(pParse, 
-      "DELETE FROM %Q.%s WHERE tbl_name=%Q and type!='trigger'",
-      pDb->zDbSName, MASTER_NAME, pTab->zName);
   if( !isView && !IsVirtual(pTab) ){
-    destroyTable(pParse, pTab);
+    sqlite3NestedParse(pParse,
+                       "DELETE FROM %Q.%s WHERE id=%d",
+                       pDb->zDbSName,
+                       TARANTOOL_SYS_INDEX_NAME,
+                       SQLITE_PAGENO_TO_SPACEID(pTab->tnum));
   }
+
+  sqlite3NestedParse(pParse,
+                     "DELETE FROM %Q.%s WHERE id=%d",
+                     pDb->zDbSName,
+                     TARANTOOL_SYS_SPACE_NAME,
+                     SQLITE_PAGENO_TO_SPACEID(pTab->tnum));
 
   /* Remove the table entry from SQLite's internal schema and modify
   ** the schema cookie.

@@ -33,7 +33,7 @@ box.sql.execute("CREATE INDEX zoobar2 ON zzoobar(c3)")
 
 -- Cleanup
 box.sql.execute("DROP INDEX zoobar2")
-zoobar:drop()
+box.sql.execute("DROP TABLE zzoobar")
 
 -- Debug
 -- require("console").start()
